@@ -829,6 +829,7 @@ private struct PresetAppearanceSnapshot: Codable, Equatable {
     let ropeThickness: Double
     let ropeStrands: Int
     let ropeGravity: Double
+    let ropeTurbulence: Double
     let gaming: Bool
     let rainbowCycle: Double
 
@@ -839,13 +840,14 @@ private struct PresetAppearanceSnapshot: Codable, Equatable {
         fade = effects.fade; scaleDown = effects.scaleDown; ropeLength = effects.ropeLength
         ropeNodes = effects.ropeNodes; ropeThickness = effects.ropeThickness
         ropeStrands = effects.ropeStrands; ropeGravity = effects.ropeGravity
+        ropeTurbulence = effects.ropeTurbulence
         gaming = effects.gaming; rainbowCycle = effects.rainbowCycle
     }
 
     init(from decoder: Decoder) throws {
         enum Keys: String, CodingKey {
             case shape, red, green, blue, size, adaptiveSmoothing, mode, lifetime, fade, scaleDown
-            case ropeLength, ropeNodes, ropeThickness, ropeStrands, ropeGravity, gaming, rainbowCycle
+            case ropeLength, ropeNodes, ropeThickness, ropeStrands, ropeGravity, ropeTurbulence, gaming, rainbowCycle
         }
         let c = try decoder.container(keyedBy: Keys.self)
         shape = try c.decode(PointerOverlay.Shape.self, forKey: .shape)
@@ -857,13 +859,16 @@ private struct PresetAppearanceSnapshot: Codable, Equatable {
         scaleDown = try c.decode(Double.self, forKey: .scaleDown); ropeLength = try c.decode(Double.self, forKey: .ropeLength)
         ropeNodes = try c.decode(Int.self, forKey: .ropeNodes); ropeThickness = try c.decode(Double.self, forKey: .ropeThickness)
         ropeStrands = try c.decode(Int.self, forKey: .ropeStrands); ropeGravity = try c.decode(Double.self, forKey: .ropeGravity)
+        // Missing is the pre-turbulence preset schema and intentionally migrates to off; a present
+        // malformed value still throws so that one bad preset is skipped without dropping others.
+        ropeTurbulence = try c.decodeIfPresent(Double.self, forKey: .ropeTurbulence) ?? 0
         gaming = try c.decode(Bool.self, forKey: .gaming); rainbowCycle = try c.decode(Double.self, forKey: .rainbowCycle)
-        let finite = [red, green, blue, lifetime, fade, scaleDown, ropeLength, ropeThickness, ropeGravity, rainbowCycle]
+        let finite = [red, green, blue, lifetime, fade, scaleDown, ropeLength, ropeThickness, ropeGravity, ropeTurbulence, rainbowCycle]
         guard finite.allSatisfy(\.isFinite), [red, green, blue].allSatisfy({ (0...1).contains($0) }),
               (16...160).contains(size), (0.1...5).contains(lifetime), (0...lifetime).contains(fade),
               (0...lifetime).contains(scaleDown), (20...600).contains(ropeLength), (1...24).contains(ropeThickness),
               (1...8).contains(ropeStrands), (4...min(48, 384 / ropeStrands)).contains(ropeNodes),
-              (0...2000).contains(ropeGravity), (0.2...20).contains(rainbowCycle) else {
+              (0...2000).contains(ropeGravity), (0...1).contains(ropeTurbulence), (0.2...20).contains(rainbowCycle) else {
             throw DecodingError.dataCorruptedError(forKey: .mode, in: c, debugDescription: "Invalid preset appearance snapshot.")
         }
     }
@@ -871,7 +876,7 @@ private struct PresetAppearanceSnapshot: Codable, Equatable {
     var effects: PointerEffectsConfiguration {
         PointerEffectsConfiguration(mode: mode, lifetime: lifetime, fade: fade, scaleDown: scaleDown,
                                     ropeLength: ropeLength, ropeNodes: ropeNodes, ropeThickness: ropeThickness,
-                                    ropeStrands: ropeStrands, ropeGravity: ropeGravity, gaming: gaming,
+                                    ropeStrands: ropeStrands, ropeGravity: ropeGravity, ropeTurbulence: ropeTurbulence, gaming: gaming,
                                     rainbowCycle: rainbowCycle)
     }
 }
@@ -1001,11 +1006,12 @@ final class MacReceiverModel: NSObject, ObservableObject, MacBLETransportSink {
         configuration.ropeThickness = number("thickness", fallback: configuration.ropeThickness, range: 1...24)
         configuration.ropeStrands = integer("strands", fallback: configuration.ropeStrands, range: 1...8)
         configuration.ropeGravity = number("gravity", fallback: configuration.ropeGravity, range: 0...2000)
+        configuration.ropeTurbulence = number("turbulence", fallback: configuration.ropeTurbulence, range: 0...1)
         configuration.gaming = boolean("gaming", fallback: false)
         configuration.rainbowCycle = number("cycle", fallback: configuration.rainbowCycle, range: 0.2...20)
         return .validated(configuration)
     }
-    private static func saveEffects(_ c: PointerEffectsConfiguration) { let d=UserDefaults.standard; d.set(c.mode.rawValue,forKey:effectsKey+".mode"); d.set(c.lifetime,forKey:effectsKey+".lifetime"); d.set(c.fade,forKey:effectsKey+".fade"); d.set(c.scaleDown,forKey:effectsKey+".scale"); d.set(c.ropeLength,forKey:effectsKey+".length"); d.set(c.ropeNodes,forKey:effectsKey+".nodes"); d.set(c.ropeThickness,forKey:effectsKey+".thickness"); d.set(c.ropeStrands,forKey:effectsKey+".strands"); d.set(c.ropeGravity,forKey:effectsKey+".gravity"); d.set(c.gaming,forKey:effectsKey+".gaming"); d.set(c.rainbowCycle,forKey:effectsKey+".cycle") }
+    private static func saveEffects(_ c: PointerEffectsConfiguration) { let d=UserDefaults.standard; d.set(c.mode.rawValue,forKey:effectsKey+".mode"); d.set(c.lifetime,forKey:effectsKey+".lifetime"); d.set(c.fade,forKey:effectsKey+".fade"); d.set(c.scaleDown,forKey:effectsKey+".scale"); d.set(c.ropeLength,forKey:effectsKey+".length"); d.set(c.ropeNodes,forKey:effectsKey+".nodes"); d.set(c.ropeThickness,forKey:effectsKey+".thickness"); d.set(c.ropeStrands,forKey:effectsKey+".strands"); d.set(c.ropeGravity,forKey:effectsKey+".gravity"); d.set(c.ropeTurbulence,forKey:effectsKey+".turbulence"); d.set(c.gaming,forKey:effectsKey+".gaming"); d.set(c.rainbowCycle,forKey:effectsKey+".cycle") }
     private var transport: MacBLETransport!
     private var subscribedCentralIDs: Set<UUID> = []
     private var transportGeneration: UInt64 = 1
@@ -2661,6 +2667,8 @@ private struct PointerEffectsConfiguration: Equatable {
     var ropeThickness = 5.0
     var ropeStrands = 2
     var ropeGravity = 600.0
+    /// Motion-gated decorative noise strength; zero preserves the pre-turbulence rope behavior.
+    var ropeTurbulence = 0.0
     var gaming = false
     var rainbowCycle = 3.0
     static func validated(_ c: PointerEffectsConfiguration) -> PointerEffectsConfiguration {
@@ -2673,12 +2681,13 @@ private struct PointerEffectsConfiguration: Equatable {
         v.ropeNodes = min(max(c.ropeNodes, 4), min(48, 384 / v.ropeStrands))
         v.ropeThickness = c.ropeThickness.isFinite ? min(max(c.ropeThickness, 1), 24) : 5
         v.ropeGravity = c.ropeGravity.isFinite ? min(max(c.ropeGravity, 0), 2000) : 600
+        v.ropeTurbulence = c.ropeTurbulence.isFinite ? min(max(c.ropeTurbulence, 0), 1) : 0
         v.rainbowCycle = c.rainbowCycle.isFinite ? min(max(c.rainbowCycle, 0.2), 20) : 3
         return v
     }
     var diagnosticsLabel: String {
         let gamingLabel = gaming ? "on" : "off"
-        return "effects capture-start configuration: mode=\(mode.title), trail lifetime=\(lifetime)s fade=\(fade)s scale-down=\(scaleDown)s; rope length=\(ropeLength)pt nodes=\(ropeNodes) thickness=\(ropeThickness)pt strands=\(ropeStrands) gravity=\(ropeGravity)pt/s² (\(ropeNodes * ropeStrands)/384 nodes), solver=XPBD-gentle-v2; gaming rainbow=\(gamingLabel) cycle=\(rainbowCycle)s. Decorative settings only; not proof of rendered performance or gentleness."
+        return "effects capture-start configuration: mode=\(mode.title), trail lifetime=\(lifetime)s fade=\(fade)s scale-down=\(scaleDown)s; rope length=\(ropeLength)pt nodes=\(ropeNodes) thickness=\(ropeThickness)pt strands=\(ropeStrands) gravity=\(ropeGravity)pt/s² turbulence=\(ropeTurbulence) (\(ropeNodes * ropeStrands)/384 nodes), solver=XPBD-gentle-v3(anchor-offsets, axial-damping-x10/y4, deterministic-noise-v1); gaming rainbow=\(gamingLabel) cycle=\(rainbowCycle)s. Decorative settings only; not proof of rendered performance or gentleness."
     }
 }
 
@@ -2766,7 +2775,7 @@ private final class PointerOverlay {
     }
     static func saveSize(_ size: Double) { UserDefaults.standard.set(validatedSize(size), forKey: sizeDefaultsKey) }
 
-    var shape: Shape = .circle { didSet { view.shape = shape } }
+    var shape: Shape = .circle { didSet { view.shape = shape; resetRopeAnchorsIfNeeded() } }
     var color: Color = Color(.sRGB, red: 0, green: 1, blue: 1) { didSet { view.color = NSColor(Self.opaque(color)) } }
     var size: Double {
         get { storedSize }
@@ -2775,6 +2784,7 @@ private final class PointerOverlay {
             guard value != storedSize else { return }
             storedSize = value
             view.pointerSize = CGFloat(value)
+            resetRopeAnchorsIfNeeded()
             resizePanel()
         }
     }
@@ -2804,6 +2814,11 @@ private final class PointerOverlay {
     /// The preceding displayed sample is used only to move the decorative anchor through this
     /// callback's bounded substeps. The rendered head itself is always the current displayed point.
     private var previousRopeHead: CGPoint?
+    // Cached offsets make each strand's kinematic anchor persistent for its current configuration.
+    // They are decorative only: the glyph always uses the unmodified displayed head.
+    private var strandAnchorOffsets: [CGFloat] = []
+    // A head-speed envelope gates deterministic turbulence and decays to zero while stationary.
+    private var ropeTurbulenceEnvelope: CGFloat = 0
     // Effect decoration is culled outside this head-relative radius so a corrupt/very fast
     // multi-display history cannot create a giant transparent backing store. The real head is
     // always included at its unmodified global coordinate.
@@ -2862,7 +2877,7 @@ private final class PointerOverlay {
         effects = .validated(configuration)
         let ropeChanged = old.ropeLength != effects.ropeLength || old.ropeNodes != effects.ropeNodes ||
             old.ropeStrands != effects.ropeStrands || old.ropeThickness != effects.ropeThickness ||
-            old.ropeGravity != effects.ropeGravity
+            old.ropeGravity != effects.ropeGravity || old.ropeTurbulence != effects.ropeTurbulence
         if old.mode != effects.mode || ropeChanged { clearVisualEffects() }
     }
     func clearVisualEffects() {
@@ -2871,6 +2886,8 @@ private final class PointerOverlay {
         currentStrokes.removeAll(keepingCapacity: true)
         lastEffectsUptime = nil
         previousRopeHead = nil
+        strandAnchorOffsets.removeAll(keepingCapacity: true)
+        ropeTurbulenceEnvelope = 0
         if !view.effectStrokes.isEmpty { view.effectStrokes = [] }
         if view.headColor != nil { view.headColor = nil }
         layoutPanel(head: displayed, strokes: [])
@@ -2967,6 +2984,24 @@ private final class PointerOverlay {
         renderEffects(head: displayed, uptime: callbackUptime)
     }
 
+    private func desiredStrandAnchorOffsets() -> [CGFloat] {
+        let count = effects.ropeStrands
+        guard count > 1 else { return [0] }
+        // At least a stroke width plus a small gap separates adjacent roots. The head-size term
+        // keeps thin ropes readable around a larger glyph; 192 pt covers 8 maximum-width strands.
+        let spacing = max(CGFloat(effects.ropeThickness) + 2, CGFloat(storedSize) * 0.08)
+        let totalSpan = min(CGFloat(192), spacing * CGFloat(count - 1))
+        let actualSpacing = totalSpan / CGFloat(count - 1)
+        return (0..<count).map { CGFloat($0) * actualSpacing - totalSpan / 2 }
+    }
+
+    private func resetRopeAnchorsIfNeeded() {
+        let expected = desiredStrandAnchorOffsets()
+        guard !strandAnchorOffsets.isEmpty, strandAnchorOffsets != expected else { return }
+        // Changing the physical roots cannot retain old-chain position/velocity history safely.
+        clearVisualEffects()
+    }
+
     private func renderEffects(head: CGPoint, uptime: TimeInterval) {
         guard uptime.isFinite, head.x.isFinite, head.y.isFinite else { clearVisualEffects(); return }
         let previous = lastEffectsUptime
@@ -2976,6 +3011,8 @@ private final class PointerOverlay {
             samples.removeAll(keepingCapacity: true)
             ropes.removeAll(keepingCapacity: true)
             previousRopeHead = nil
+            strandAnchorOffsets.removeAll(keepingCapacity: true)
+            ropeTurbulenceEnvelope = 0
         }
         lastEffectsUptime = uptime
 
@@ -3046,13 +3083,25 @@ private final class PointerOverlay {
             let nodeCount = effects.ropeNodes
             let strandCount = effects.ropeStrands
             let rest = CGFloat(effects.ropeLength / Double(nodeCount - 1))
+            let expectedOffsets = desiredStrandAnchorOffsets()
+            if strandAnchorOffsets != expectedOffsets {
+                ropes.removeAll(keepingCapacity: true)
+                previousRopeHead = nil
+                ropeTurbulenceEnvelope = 0
+                strandAnchorOffsets = expectedOffsets
+            }
+            func strandAnchor(_ baseHead: CGPoint, _ strand: Int) -> CGPoint {
+                CGPoint(x: baseHead.x + strandAnchorOffsets[strand], y: baseHead.y)
+            }
             func initializedRopes() -> [RopeChain] {
                 (0..<strandCount).map { strand in
-                    let angle = CGFloat(Double(strand) * 2 * Double.pi / Double(strandCount) + Double.pi / 2)
-                    let direction = CGVector(dx: cos(angle), dy: sin(angle))
+                    let anchor = strandAnchor(head, strand)
+                    let centeredOffset = strandAnchorOffsets[strand]
+                    let fan = centeredOffset / max(CGFloat(effects.ropeLength), 1) * 0.18
+                    let direction = CGVector(dx: fan, dy: CGFloat(sqrt(Double(max(0, 1 - fan * fan)))))
                     return RopeChain(points: (0..<nodeCount).map { index in
-                        CGPoint(x: head.x + CGFloat(index) * rest * direction.dx,
-                                y: head.y + CGFloat(index) * rest * direction.dy)
+                        CGPoint(x: anchor.x + CGFloat(index) * rest * direction.dx,
+                                y: anchor.y + CGFloat(index) * rest * direction.dy)
                     }, velocities: Array(repeating: .zero, count: nodeCount),
                        lambdas: Array(repeating: 0, count: nodeCount - 1))
                 }
@@ -3069,9 +3118,22 @@ private final class PointerOverlay {
             // callback gap discards stale elapsed time rather than replaying an old trajectory.
             // Anchor interpolation uses only the preceding and current displayed samples; the final
             // anchor and rendered head are exact, with no prediction, clamp, or added head latency.
-            let dt = min(1.0 / 30.0, max(0, discontinuity ? 0 : (elapsed ?? 0)))
+            let rawDT = discontinuity ? 0 : (elapsed ?? 0)
+            let dt = min(1.0 / 30.0, max(0, rawDT))
             let anchorStart = previousRopeHead ?? head
-            var invalid = !rest.isFinite || rest <= 0 || !finite(anchorStart)
+            let headSpeed: CGFloat
+            if rawDT.isFinite, rawDT > 0, rawDT <= 0.25, finite(anchorStart) {
+                headSpeed = min(2_400, hypot(head.x - anchorStart.x, head.y - anchorStart.y) / CGFloat(rawDT))
+            } else {
+                headSpeed = 0
+            }
+            let targetTurbulenceEnvelope = min(1, headSpeed / 900)
+            let envelopeRate: CGFloat = targetTurbulenceEnvelope > ropeTurbulenceEnvelope ? 8 : 3
+            ropeTurbulenceEnvelope += (targetTurbulenceEnvelope - ropeTurbulenceEnvelope) *
+                (1 - CGFloat(exp(-Double(envelopeRate) * dt)))
+            let anchorOffsetBudget = strandAnchorOffsets.map { abs($0) }.max() ?? 0
+            var invalid = !rest.isFinite || rest <= 0 || !finite(anchorStart) ||
+                !ropeTurbulenceEnvelope.isFinite || anchorOffsetBudget >= Self.maximumDecorationRadius
             if dt > 0 && !invalid {
                 let substeps = min(4, max(1, Int(ceil(dt / (1.0 / 120.0)))))
                 let step = CGFloat(dt / Double(substeps))
@@ -3083,15 +3145,18 @@ private final class PointerOverlay {
                 let inverseMass = 1 / nodeMass
                 let compliance = CGFloat(0.00008) + CGFloat(0.000002) * rest
                 let alpha = compliance / (step * step)
-                // Post-projection exponential damping covers constraint-created motion in this same
-                // step. Its 10/s rate is time-consistent; it is not a per-callback percentage.
-                let postDamping = CGFloat(exp(-10 * Double(step)))
+                // Post-projection damping covers constraint-created motion in this same step.
+                // Horizontal damping remains strong; lower (but nonzero) vertical damping makes
+                // screen-down gravity visibly settle instead of immediately erasing it.
+                let postDampingX = CGFloat(exp(-10 * Double(step)))
+                let postDampingY = CGFloat(exp(-4 * Double(step)))
+                let maximumTurbulenceAcceleration: CGFloat = 900
                 // The decorative budget scales with configured geometry and is intentionally far
                 // below the former blind 4,000 pt/s cap.
                 let maximumVelocity = max(CGFloat(180), min(CGFloat(1_400),
                     CGFloat(effects.ropeLength) * 2 + rest * 4))
                 let maximumSegment = rest * 1.8
-                let maximumRadius = min(Self.maximumDecorationRadius,
+                let maximumRadius = min(Self.maximumDecorationRadius - anchorOffsetBudget,
                     CGFloat(effects.ropeLength) * 1.8 + CGFloat(storedSize) + 64)
 
                 for substep in 0..<substeps where !invalid {
@@ -3100,12 +3165,21 @@ private final class PointerOverlay {
                                               y: anchorStart.y + (head.y - anchorStart.y) * fraction)
                     guard finite(substepHead) else { invalid = true; break }
                     for strand in ropes.indices {
+                        let substepAnchor = strandAnchor(substepHead, strand)
+                        guard finite(substepAnchor) else { invalid = true; break }
                         let oldPoints = ropes[strand].points
-                        ropes[strand].points[0] = substepHead
+                        ropes[strand].points[0] = substepAnchor
                         ropes[strand].velocities[0] = .zero
                         ropes[strand].lambdas = Array(repeating: 0, count: nodeCount - 1)
                         for index in 1..<nodeCount {
                             var velocity = ropes[strand].velocities[index]
+                            let phase = Double(strand * 97 + index * 31)
+                            let noise = 0.62 * sin(uptime * 5.7 + phase) + 0.38 * sin(uptime * 9.1 + phase * 1.73)
+                            let turbulence = CGFloat(noise) * effects.ropeTurbulence * ropeTurbulenceEnvelope *
+                                maximumTurbulenceAcceleration
+                            // The deterministic, continuous force is non-head-only and motion-gated.
+                            velocity.dx += turbulence * step
+                            velocity.dy += turbulence * 0.35 * step
                             velocity.dy += CGFloat(effects.ropeGravity) * step
                             let candidate = CGPoint(x: ropes[strand].points[index].x + velocity.dx * step,
                                                     y: ropes[strand].points[index].y + velocity.dy * step)
@@ -3119,7 +3193,7 @@ private final class PointerOverlay {
                         // forward projection. Equal free-node masses and a zero-mass kinematic head
                         // distribute corrections in both directions without feeding force to head.
                         for _ in 0..<5 where !invalid {
-                            ropes[strand].points[0] = substepHead
+                            ropes[strand].points[0] = substepAnchor
                             for index in 1..<nodeCount {
                                 var dx = ropes[strand].points[index].x - ropes[strand].points[index - 1].x
                                 var dy = ropes[strand].points[index].y - ropes[strand].points[index - 1].y
@@ -3149,7 +3223,7 @@ private final class PointerOverlay {
 
                         // One forward safety pass bounds pathological stretch; ordinary motion is
                         // governed by the compliant solve above, not repeated hard projection.
-                        ropes[strand].points[0] = substepHead
+                        ropes[strand].points[0] = substepAnchor
                         for index in 1..<nodeCount {
                             let anchor = ropes[strand].points[index - 1]
                             let dx = ropes[strand].points[index].x - anchor.x
@@ -3162,16 +3236,16 @@ private final class PointerOverlay {
                                 ropes[strand].points[index] = CGPoint(x: anchor.x + dx / distance * maximumSegment,
                                                                      y: anchor.y + dy / distance * maximumSegment)
                             }
-                            let radius = hypot(ropes[strand].points[index].x - substepHead.x,
-                                               ropes[strand].points[index].y - substepHead.y)
+                            let radius = hypot(ropes[strand].points[index].x - substepAnchor.x,
+                                               ropes[strand].points[index].y - substepAnchor.y)
                             guard radius.isFinite, radius <= maximumRadius else { invalid = true; break }
                         }
                         if invalid { break }
 
                         for index in 1..<nodeCount {
                             var velocity = CGVector(
-                                dx: (ropes[strand].points[index].x - oldPoints[index].x) / step * postDamping,
-                                dy: (ropes[strand].points[index].y - oldPoints[index].y) / step * postDamping)
+                                dx: (ropes[strand].points[index].x - oldPoints[index].x) / step * postDampingX,
+                                dy: (ropes[strand].points[index].y - oldPoints[index].y) / step * postDampingY)
                             let speed = hypot(velocity.dx, velocity.dy)
                             guard speed.isFinite else { invalid = true; break }
                             if speed > maximumVelocity {
@@ -3185,7 +3259,7 @@ private final class PointerOverlay {
             }
             previousRopeHead = head
             for strand in ropes.indices {
-                ropes[strand].points[0] = head
+                ropes[strand].points[0] = strandAnchor(head, strand)
                 ropes[strand].velocities[0] = .zero
             }
             if invalid {
@@ -3313,8 +3387,14 @@ private final class PointerOverlayView: NSView {
     var pointerSize: CGFloat = 54 { didSet { if oldValue != pointerSize { needsDisplay = true } } }
     var globalHead = CGPoint.zero { didSet { if oldValue != globalHead { needsDisplay = true } } }
     var globalBounds = CGRect.zero { didSet { if oldValue != globalBounds { needsDisplay = true } } }
+    var centersHeadInBounds = false { didSet { if oldValue != centersHeadInBounds { needsDisplay = true } } }
     var headColor: NSColor? { didSet { needsDisplay = true } }
     var effectStrokes: [EffectStroke] = [] { didSet { needsDisplay = true } }
+
+    override func layout() {
+        super.layout()
+        if centersHeadInBounds { needsDisplay = true }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -3328,7 +3408,9 @@ private final class PointerOverlayView: NSView {
         let local: (CGPoint) -> CGPoint = { point in
             CGPoint(x: point.x - self.globalBounds.minX, y: self.globalBounds.maxY - point.y)
         }
-        let localHead = local(globalHead)
+        let localHead = centersHeadInBounds
+            ? CGPoint(x: bounds.midX, y: bounds.midY)
+            : local(globalHead)
         // The glyph remains centered on the true head after the global geometry union shifts the panel.
         let glyphRect = CGRect(x: localHead.x - pointerSize / 2, y: localHead.y - pointerSize / 2,
                                width: pointerSize, height: pointerSize)
@@ -3449,16 +3531,17 @@ private struct PointerOverlayReference: NSViewRepresentable {
     let color: Color
     let size: Double
 
-    func makeNSView(context: Context) -> PointerOverlayView { PointerOverlayView(frame: .zero) }
+    func makeNSView(context: Context) -> PointerOverlayView {
+        let view = PointerOverlayView(frame: .zero)
+        view.centersHeadInBounds = true
+        return view
+    }
     func updateNSView(_ view: PointerOverlayView, context: Context) {
         if view.shape != shape { view.shape = shape }
         let normalizedColor = NSColor(PointerOverlay.opaque(color))
         if !view.color.isEqual(normalizedColor) { view.color = normalizedColor }
         let normalizedSize = CGFloat(PointerOverlay.validatedSize(size))
         if view.pointerSize != normalizedSize { view.pointerSize = normalizedSize }
-        let head = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
-        if view.globalBounds != view.bounds { view.globalBounds = view.bounds }
-        if view.globalHead != head { view.globalHead = head }
     }
 }
 
@@ -3741,18 +3824,22 @@ private struct EffectsSheet: View {
                     if model.setEffectsConfiguration(draft) { dismiss() } else { applyRejected = true }
                 }.keyboardShortcut(.defaultAction).disabled(model.effectsControlDisabled)
             }
-            Picker("Tail mode", selection: binding(\.mode)) { ForEach(EffectMode.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
-            if c.mode == .trail { trailControls(c) }
-            if c.mode == .rope { ropeControls(c) }
-            GroupBox("Gaming") { VStack(alignment: .leading) {
-                Toggle("Rainbow head and effect colors", isOn: binding(\.gaming))
-                Slider(value: binding(\.rainbowCycle), in: 0.2...20)
-                Text("Rainbow cycle duration (lower is faster): " + decimal(c.rainbowCycle) + " seconds")
-            } }
-            Text("Decorative bounded displayed-head history only; it never replays or changes the pointer head. Off has no tail/rope, but Gaming can still animate the head.").font(.footnote).foregroundStyle(.secondary)
-            if model.effectsControlDisabled || applyRejected {
-                Text("Effects cannot be applied while diagnostics are starting, active, or finalizing. Your local draft is retained.")
-                    .font(.footnote).foregroundStyle(.orange)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Tail mode", selection: binding(\.mode)) { ForEach(EffectMode.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
+                    if c.mode == .trail { trailControls(c) }
+                    if c.mode == .rope { ropeControls(c) }
+                    GroupBox("Gaming") { VStack(alignment: .leading) {
+                        Toggle("Rainbow head and effect colors", isOn: binding(\.gaming))
+                        Slider(value: binding(\.rainbowCycle), in: 0.2...20)
+                        Text("Rainbow cycle duration (lower is faster): " + decimal(c.rainbowCycle) + " seconds")
+                    } }
+                    Text("Decorative bounded displayed-head history only; it never replays or changes the pointer head. Off has no tail/rope, but Gaming can still animate the head.").font(.footnote).foregroundStyle(.secondary)
+                    if model.effectsControlDisabled || applyRejected {
+                        Text("Effects cannot be applied while diagnostics are starting, active, or finalizing. Your local draft is retained.")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                }
             }
         }.padding(18).frame(width: 540, height: 520).preferredColorScheme(.dark)
     }
@@ -3770,6 +3857,8 @@ private struct EffectsSheet: View {
             Slider(value: binding(\.ropeThickness), in: 1...24); Text("Thickness " + decimal(c.ropeThickness) + " pt")
             Stepper("Strands: " + String(c.ropeStrands), value: binding(\.ropeStrands), in: 1...8)
             Slider(value: binding(\.ropeGravity), in: 0...2000); Text("Screen-down gravity " + String(Int(c.ropeGravity)) + " pt/s² — " + String(c.ropeNodes*c.ropeStrands) + "/384 node budget")
+            Slider(value: binding(\.ropeTurbulence), in: 0...1)
+            Text("Movement turbulence " + String(Int((c.ropeTurbulence * 100).rounded())) + "% — deterministic, bounded, and off at 0%")
         } }
     }
 }
