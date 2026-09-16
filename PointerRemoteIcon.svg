@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Pointer Remote app icon</title>
+  <desc id="desc">A white mouse outline receives a green remote laser beam on a full-bleed charcoal background.</desc>
+  <defs>
+    <linearGradient id="background" x1="80" y1="40" x2="940" y2="1000" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#242629"/>
+      <stop offset="0.52" stop-color="#151719"/>
+      <stop offset="1" stop-color="#242629"/>
+    </linearGradient>
+    <linearGradient id="laser" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#53FA82"/>
+      <stop offset="1" stop-color="#26E765"/>
+    </linearGradient>
+  </defs>
+  <!-- Deliberately full bleed: iOS supplies the icon mask/corners. -->
+  <rect width="1024" height="1024" fill="url(#background)"/>
+  <!-- Remote laser and its four short signal rays. -->
+  <g fill="url(#laser)">
+    <rect x="483" y="86" width="58" height="348" rx="29"/>
+    <rect x="324" y="349" width="142" height="42" rx="21" transform="rotate(45 395 370)"/>
+    <rect x="558" y="349" width="142" height="42" rx="21" transform="rotate(-45 629 370)"/>
+    <rect x="278" y="438" width="114" height="42" rx="21"/>
+    <rect x="632" y="438" width="114" height="42" rx="21"/>
+  </g>
+  <!-- Mouse body: a clean, unbroken white outline kept inside the safe frame. -->
+  <path d="M512 434C407 434 322 519 322 624V811C322 913 398 964 512 964C626 964 702 913 702 811V624C702 519 617 434 512 434Z" fill="none" stroke="#F8F7F5" stroke-width="38" stroke-linejoin="round"/>
+  <!-- Dark scroll well inset into the white control. -->
+  <rect x="453" y="541" width="118" height="210" rx="59" fill="#F8F7F5"/>
+  <rect x="496" y="587" width="32" height="118" rx="16" fill="#1A1C1E"/>
+</svg>
