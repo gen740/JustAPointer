@@ -164,4 +164,4 @@ The iPhone main screen includes ten generic sample speaker notes. Customize `Spe
 
 The script number is a local cue, not a Mac slide acknowledgement. Rejected taps (disconnected, inactive, unapproved, calibration, or a full control queue) do not advance it. Reconnect/background retains the local number, while app relaunch starts at 1. Use the script menu to align after another keyboard, a delivery failure, or a presentation restart; selecting 1 resets only the script and sends no key. The timer Reset keeps its original timer-only behavior. Endpoint taps still send the original keys, while the script number stays bounded. Deck animations and skipped slides may require manual alignment.
 
-For device builds, select your own development team in Xcode Signing & Capabilities. Personal speaker notes and signing backups belong in `.local-private/`, which is excluded from Git.
+For device builds, select your own development team in Xcode Signing & Capabilities.

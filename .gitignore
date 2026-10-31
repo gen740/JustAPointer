@@ -7,7 +7,7 @@ xcuserdata/
 *.mobileprovision
 .env
 
-# Local-only presentation and signing backups
+# Private local files
 .local-private/
 *.p8
 *.pfx
