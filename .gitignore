@@ -6,3 +6,10 @@ xcuserdata/
 *.p12
 *.mobileprovision
 .env
+
+# Local-only presentation and signing backups
+.local-private/
+*.p8
+*.pfx
+*.key
+.env.*

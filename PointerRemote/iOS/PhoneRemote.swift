@@ -5,6 +5,29 @@ import CoreMotion
 import UIKit
 import CoreHaptics
 
+// Local cue position: the BLE protocol does not report the presentation's slide number.
+struct SpeakerScript {
+    static let slides: [String] = [
+        "Welcome. Today I will introduce the topic and explain what we will cover.",
+        "Here is the background and why this topic matters.",
+        "This slide describes the main problem we want to solve.",
+        "Our goal is to make the problem clear and define a useful outcome.",
+        "This is an overview of the approach and its main steps.",
+        "Here is a simple example that illustrates the approach.",
+        "These are the key observations from the example.",
+        "This slide explains the limitations and open questions.",
+        "The next steps are to review the results and improve the approach.",
+        "Thank you for listening. I welcome your questions.",
+    ]
+    private(set) var index = 0
+    mutating func move(forward: Bool) {
+        index = min(max(index + (forward ? 1 : -1), 0), Self.slides.count - 1)
+    }
+    mutating func select(_ index: Int) {
+        self.index = min(max(index, 0), Self.slides.count - 1)
+    }
+}
+
 @main
 struct PhoneRemoteApp: App {
     var body: some Scene { WindowGroup { PhoneRemoteView() } }
@@ -95,6 +118,10 @@ final class PhoneRemoteModel: NSObject, ObservableObject, CBCentralManagerDelega
     @Published private(set) var physicalPointerHold = false
     @Published private(set) var holdLockEnabled = false
     @Published private(set) var pointerEnabled = false
+    @Published private(set) var speakerScript = SpeakerScript()
+
+    func selectScriptSlide(_ index: Int) { speakerScript.select(index) }
+
     @Published var elapsed = 0
     @Published var timerRunning = false
     @Published private(set) var timerMode: TimerMode
@@ -1126,10 +1153,14 @@ final class PhoneRemoteModel: NSObject, ObservableObject, CBCentralManagerDelega
     private let slideFeedback = UIImpactFeedbackGenerator(style: .light)
 
     func sendKey(_ key: RemoteMessage.RemoteKey) {
-        guard appIsActive, subscribed, !disconnecting, isApproved, activeCalibrationSession == nil,
+        guard appIsActive, central.state == .poweredOn, subscribed, !disconnecting, isApproved, activeCalibrationSession == nil,
               peripheral?.state == .connected else { return }
         guard orderedMessages.count < 64 else { forceDisconnectForQueueFull(); return }
         enqueue(.key(key))
+        switch key {
+        case .left: speakerScript.move(forward: false)
+        case .right: speakerScript.move(forward: true)
+        }
         // Local tap feedback, not confirmation that the Mac changed slides.
         slideFeedback.impactOccurred()
         slideFeedback.prepare()
@@ -1888,6 +1919,7 @@ private enum PhoneTheme {
 
 struct PhoneRemoteView: View {
     @StateObject private var model = PhoneRemoteModel()
+    @ScaledMetric(relativeTo: .body) private var scriptTextSize: CGFloat = 20
     @State private var settingsPresented = false
     @State private var resetTimerConfirmationPresented = false
     @State private var presetSavePresented = false
@@ -1895,9 +1927,10 @@ struct PhoneRemoteView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            // Compact sizing keeps every main-screen control on short portrait phones.
-            let compact = proxy.size.height < 700 || proxy.size.width > proxy.size.height
+            // Compact controls leave room for the script; short phones can scroll the main screen.
+            let compact = proxy.size.height < 900 || proxy.size.width > proxy.size.height
             let holdPadMinimum: CGFloat = compact ? 86 : 150
+            ScrollView {
             VStack(spacing: compact ? 8 : 14) {
                 HStack {
                     Text("Pointer Remote")
@@ -1955,7 +1988,7 @@ struct PhoneRemoteView: View {
                                       isPhysicallyHolding: model.physicalPointerHold,
                                       isLocked: model.holdLockEnabled,
                                       onBegan: { model.beginPointerHold() }, onFinished: { model.endPointerHold() })
-                        .frame(maxWidth: .infinity, minHeight: holdPadMinimum, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity, minHeight: holdPadMinimum, maxHeight: holdPadMinimum)
                         .accessibilityLabel("Point")
                         .accessibilityHint("Press and hold to show the continuously tracked Mac pointer. Release hides it unless Hold Lock is on.")
                 }
@@ -1970,6 +2003,36 @@ struct PhoneRemoteView: View {
                 }
                 .buttonStyle(RemoteButtonStyle(compact: compact))
                 .disabled(!model.isApproved)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Speaker Notes").font(.headline)
+                        Spacer()
+                        Picker("Script slide", selection: Binding(
+                            get: { model.speakerScript.index },
+                            set: { model.selectScriptSlide($0) }
+                        )) {
+                            ForEach(0..<SpeakerScript.slides.count, id: \.self) { index in
+                                Text("\(index + 1) / \(SpeakerScript.slides.count)").tag(index)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityHint("Aligns the script only; does not send a slide key. Select 1 to reset.")
+                    }
+                    ScrollView {
+                        Text(SpeakerScript.slides[model.speakerScript.index])
+                            .font(.system(size: scriptTextSize))
+                            .lineSpacing(5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.bottom, 4)
+                    }
+                    .id(model.speakerScript.index)
+                    .frame(height: compact ? 150 : 210)
+                    Text("Local cue · use the slide menu to align / reset")
+                        .font(.caption2).foregroundStyle(.white.opacity(0.7))
+                }
+                .padding(12)
+                .background(PhoneTheme.surface, in: RoundedRectangle(cornerRadius: 14))
 
                 VStack(spacing: 4) {
                     Text(model.timerMode.title).font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.8))
@@ -1994,7 +2057,8 @@ struct PhoneRemoteView: View {
                 }
             }
             .padding(compact ? 10 : 16)
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .top)
+            }
         }
         .background(PhoneTheme.canvas.ignoresSafeArea())
         .preferredColorScheme(.dark)

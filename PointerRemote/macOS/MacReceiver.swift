@@ -867,7 +867,8 @@ private struct PresetAppearanceSnapshot: Codable, Equatable {
         guard finite.allSatisfy(\.isFinite), [red, green, blue].allSatisfy({ (0...1).contains($0) }),
               (16...160).contains(size), (0.1...5).contains(lifetime), (0...lifetime).contains(fade),
               (0...lifetime).contains(scaleDown), (20...600).contains(ropeLength), (1...24).contains(ropeThickness),
-              (1...8).contains(ropeStrands), (4...min(48, 384 / ropeStrands)).contains(ropeNodes),
+              (PointerEffectsConfiguration.minimumRopeStrands...PointerEffectsConfiguration.maximumRopeStrands).contains(ropeStrands),
+              (PointerEffectsConfiguration.minimumRopeNodes...PointerEffectsConfiguration.maximumRopeNodes(forStrands: ropeStrands)).contains(ropeNodes),
               (0...2000).contains(ropeGravity), (0...1).contains(ropeTurbulence), (0.2...20).contains(rainbowCycle) else {
             throw DecodingError.dataCorruptedError(forKey: .mode, in: c, debugDescription: "Invalid preset appearance snapshot.")
         }
@@ -1002,9 +1003,11 @@ final class MacReceiverModel: NSObject, ObservableObject, MacBLETransportSink {
         configuration.fade = number("fade", fallback: min(configuration.fade, configuration.lifetime), range: 0...configuration.lifetime)
         configuration.scaleDown = number("scale", fallback: min(configuration.scaleDown, configuration.lifetime), range: 0...configuration.lifetime)
         configuration.ropeLength = number("length", fallback: configuration.ropeLength, range: 20...600)
-        configuration.ropeNodes = integer("nodes", fallback: configuration.ropeNodes, range: 4...48)
+        configuration.ropeNodes = integer("nodes", fallback: configuration.ropeNodes,
+                                          range: PointerEffectsConfiguration.minimumRopeNodes...PointerEffectsConfiguration.maximumRopeNodesPerStrand)
         configuration.ropeThickness = number("thickness", fallback: configuration.ropeThickness, range: 1...24)
-        configuration.ropeStrands = integer("strands", fallback: configuration.ropeStrands, range: 1...8)
+        configuration.ropeStrands = integer("strands", fallback: configuration.ropeStrands,
+                                            range: PointerEffectsConfiguration.minimumRopeStrands...PointerEffectsConfiguration.maximumRopeStrands)
         configuration.ropeGravity = number("gravity", fallback: configuration.ropeGravity, range: 0...2000)
         configuration.ropeTurbulence = number("turbulence", fallback: configuration.ropeTurbulence, range: 0...1)
         configuration.gaming = boolean("gaming", fallback: false)
@@ -1909,19 +1912,19 @@ final class MacReceiverModel: NSObject, ObservableObject, MacBLETransportSink {
         } else {
             batchSizes = "Serial callback batches containing accepted candidates: callbacks 0; accepted candidates 0; rejected decoded motion candidates \(serial.rejectedCandidatePackets); no callback-size observations; overflow \(serial.callbackBatchSizeOverflow)."
         }
-        let render = line("Actual visible render callback execution intervals",
+        let render = line("Actual presented-geometry callback execution intervals",
                           samples: capture.renderIntervals, count: capture.visibleRenderCallbacks,
                           observation: capture.visibleRenderObservation, overflow: capture.renderIntervalOverflow)
-        let age = line("Latest accepted motion receive age at visible render callback",
+        let age = line("Latest accepted motion receive age at presented-geometry callback",
                        samples: capture.receiveAges, count: capture.visibleRenderCallbacks,
                        observation: capture.visibleRenderObservation, overflow: capture.receiveAgeOverflow)
         let summary: String
         if serial.receiveIntervals.isEmpty && capture.renderIntervals.isEmpty {
-            summary = "Plain-English summary: there were not enough serial accepted-candidate receive intervals or visible render intervals to characterize jitter."
+            summary = "Plain-English summary: there were not enough serial accepted-candidate receive intervals or presented-geometry callback intervals to characterize jitter."
         } else {
             let receiveMedian = statistics(serial.receiveIntervals).map { "\(ms($0.median)) ms" } ?? "n/a"
             let renderMedian = statistics(capture.renderIntervals).map { "\(ms($0.median)) ms" } ?? "n/a"
-            summary = "Plain-English summary: the typical accepted receive interval was \(receiveMedian), and the typical actual visible callback interval was \(renderMedian). Compare the p95/p99/max values with the medians to spot bursts or main-thread scheduling stalls."
+            summary = "Plain-English summary: the typical accepted receive interval was \(receiveMedian), and the typical actual presented-geometry callback interval was \(renderMedian). Compare the p95/p99/max values with the medians to spot bursts or main-thread scheduling stalls."
         }
         return """
         Pointer Remote — Jitter Diagnostics
@@ -1940,10 +1943,11 @@ final class MacReceiverModel: NSObject, ObservableObject, MacBLETransportSink {
         Handoff age is local scheduling time from the latest known-accepted serial callback to main mapping; it is not BLE PHY delay or cross-device age.
         Sequence gaps during serial accepted candidates: \(serial.sequenceGaps). These are unexplained unseen sequence numbers after accounting separately for local mailbox replacement; radio loss is not proven.
         \(render)
-        Render intervals use ProcessInfo.systemUptime at the main callback entry, not CADisplayLink targetTimestamp or a CV predicted/output time. Equal-target visible callbacks are included. Hidden/restarted display-link segments do not share an interval baseline.
+        Render intervals use ProcessInfo.systemUptime at a main callback that produced selected-viewport-intersecting geometry, not CADisplayLink targetTimestamp or a CV predicted/output time. Equal-target presented callbacks are included. Permission-active all-outside and stopped/restarted segments do not share an interval baseline.
         \(age)
+        Trail live-sample hard-guard overflow during the current hold: \(overlay.trailOverflowCount). Existing live Trail samples are not evicted or decimated; rejected changed samples resume as a separate path segment when capacity expires.
 
-        Percentiles use nearest rank: sort only when finalizing, then select rank ceil(p × n). With no samples the value is n/a, never zero. Storage is capped at \(JitterDiagnosticCapture.sampleCapacity) samples per metric; overflow is reported above while total callback/packet counts continue. Receive observation is first-to-last accepted serial callback; render observation is the sum of recorded visible within-segment callback intervals.
+        Percentiles use nearest rank: sort only when finalizing, then select rank ceil(p × n). With no samples the value is n/a, never zero. Storage is capped at \(JitterDiagnosticCapture.sampleCapacity) samples per metric; overflow is reported above while total callback/packet counts continue. Receive observation is first-to-last accepted serial callback; render observation is the sum of recorded presented-geometry within-segment callback intervals.
 
         Scope: these are local Mac receive and main callback scheduling observations. They cannot prove photons-on-screen timing, drawing cadence, CPU/GPU cost, BLE connection interval, radio loss, or cross-device/end-to-end latency. The existing predicted maximumRenderFrameGap diagnostic is separate from these actual callback execution intervals.
         """
@@ -2460,7 +2464,7 @@ final class MacReceiverModel: NSObject, ObservableObject, MacBLETransportSink {
     }
 
     // Logical mapping remains raw latest-coordinate acceptance: visual filtering occurs later only
-    // in PointerOverlay's visible render callback, never in packet mapping or this state.
+    // in PointerOverlay's permission-active selected-screen callback, never in packet mapping or this state.
     @discardableResult private func moveCumulative(x: Double, y: Double) -> Bool {
         guard !pointerDisplayBounds.isEmpty, x.isFinite, y.isFinite,
               let heldSensitivityX, let heldSensitivityY else { return false }
@@ -2480,22 +2484,26 @@ final class MacReceiverModel: NSObject, ObservableObject, MacBLETransportSink {
     }
 
     private func reconcilePointerVisibility() -> Bool {
-        guard let displayID = lastPointedDisplayID else { hidePointerOverlay(); return true }
-        let shouldShow = pointerEnabled && pointerDisplayBounds.contains(effectivePointerTarget)
-        if shouldShow {
-            let now = ProcessInfo.processInfo.systemUptime
-            if overlayShown {
-                overlay.updateTarget(effectivePointerTarget, timestamp: now)
-            } else {
-                guard overlay.begin(at: effectivePointerTarget, on: displayID, timestamp: now) else { return false }
-                overlayShown = true
-            }
-        } else { hidePointerOverlay() }
+        guard pointerEnabled else { hidePointerOverlay(); return true }
+        guard let displayID = lastPointedDisplayID, !pointerDisplayBounds.isEmpty else {
+            hidePointerOverlay()
+            return true
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if overlayShown {
+            let updated = overlay.updateTarget(effectivePointerTarget, on: displayID,
+                                               viewport: pointerDisplayBounds, timestamp: now)
+            if !updated { overlayShown = false }
+            return updated
+        }
+        guard overlay.begin(at: effectivePointerTarget, on: displayID,
+                            viewport: pointerDisplayBounds, timestamp: now) else { return false }
+        overlayShown = true
         return true
     }
 
     private func hidePointerOverlay() {
-        // Every hide is a visual-filter lifecycle boundary, including an already-hidden offscreen target.
+        // Explicit permission/lifecycle boundaries reset visual state. Ordinary viewport exit does not.
         overlay.resetAdaptiveSmoothing()
         guard overlayShown else { return }
         overlayShown = false
@@ -2516,14 +2524,13 @@ final class MacReceiverModel: NSObject, ObservableObject, MacBLETransportSink {
     }
 
     private func finishHoldDiagnostics() {
-        print(String(format: "Pointer tracking diagnostics — accepted packets %d; sequence gaps %d; max receive gap %.3fs; max render frame gap %.3fs. Hidden packets are included; receive and render times are local Mac scheduling observations, not cross-device latency.", holdAcceptedPackets, holdSequenceGaps, holdMaxReceiveGap, overlay.maximumRenderFrameGap))
+        print(String(format: "Pointer tracking diagnostics — accepted packets %d; sequence gaps %d; max receive gap %.3fs; max presented-geometry display callback gap %.3fs; trail hard-guard overflow %llu. Hidden packets are included; render gaps exclude all-outside intervals, and receive/render times are local Mac scheduling observations, not cross-device latency.", holdAcceptedPackets, holdSequenceGaps, holdMaxReceiveGap, overlay.maximumRenderFrameGap, overlay.trailOverflowCount))
     }
 
     private func cancelPointerForDisplayChange() { enqueueBarrierIntent(.displayTopologyChanged) }
 
     private func cancelPointerForDisplayChangeNow() {
         finalizeJitterDiagnostics(reason: "the display configuration changed")
-        overlay.resetAdaptiveSmoothing()
         if let calibrationSession = calibrationRun?.session {
             calibrationRun = nil; calibrationOverlay.hide(); calibrationSummary = nil
             if let authorizedCentralID {
@@ -2658,6 +2665,15 @@ private enum EffectMode: String, Codable, CaseIterable, Identifiable {
 }
 
 private struct PointerEffectsConfiguration: Equatable {
+    static let minimumRopeNodes = 4
+    static let maximumRopeNodesPerStrand = 128
+    static let minimumRopeStrands = 1
+    static let maximumRopeStrands = 8
+    static let maximumRopeNodesTotal = 1_024
+    static func maximumRopeNodes(forStrands strands: Int) -> Int {
+        min(maximumRopeNodesPerStrand, maximumRopeNodesTotal / max(strands, minimumRopeStrands))
+    }
+
     var mode: EffectMode = .off
     var lifetime = 1.0
     var fade = 0.6
@@ -2677,8 +2693,8 @@ private struct PointerEffectsConfiguration: Equatable {
         v.fade = c.fade.isFinite ? min(max(c.fade, 0), v.lifetime) : min(0.6, v.lifetime)
         v.scaleDown = c.scaleDown.isFinite ? min(max(c.scaleDown, 0), v.lifetime) : min(0.6, v.lifetime)
         v.ropeLength = c.ropeLength.isFinite ? min(max(c.ropeLength, 20), 600) : 160
-        v.ropeStrands = min(max(c.ropeStrands, 1), 8)
-        v.ropeNodes = min(max(c.ropeNodes, 4), min(48, 384 / v.ropeStrands))
+        v.ropeStrands = min(max(c.ropeStrands, minimumRopeStrands), maximumRopeStrands)
+        v.ropeNodes = min(max(c.ropeNodes, minimumRopeNodes), maximumRopeNodes(forStrands: v.ropeStrands))
         v.ropeThickness = c.ropeThickness.isFinite ? min(max(c.ropeThickness, 1), 24) : 5
         v.ropeGravity = c.ropeGravity.isFinite ? min(max(c.ropeGravity, 0), 2000) : 600
         v.ropeTurbulence = c.ropeTurbulence.isFinite ? min(max(c.ropeTurbulence, 0), 1) : 0
@@ -2687,17 +2703,25 @@ private struct PointerEffectsConfiguration: Equatable {
     }
     var diagnosticsLabel: String {
         let gamingLabel = gaming ? "on" : "off"
-        return "effects capture-start configuration: mode=\(mode.title), trail lifetime=\(lifetime)s fade=\(fade)s scale-down=\(scaleDown)s; rope length=\(ropeLength)pt nodes=\(ropeNodes) thickness=\(ropeThickness)pt strands=\(ropeStrands) gravity=\(ropeGravity)pt/s² turbulence=\(ropeTurbulence) (\(ropeNodes * ropeStrands)/384 nodes), solver=XPBD-gentle-v3(anchor-offsets, axial-damping-x10/y4, deterministic-noise-v1); gaming rainbow=\(gamingLabel) cycle=\(rainbowCycle)s. Decorative settings only; not proof of rendered performance or gentleness."
+        return "effects capture-start configuration: mode=\(mode.title), trail lifetime=\(lifetime)s fade=\(fade)s scale-down=\(scaleDown)s; rope length=\(ropeLength)pt nodes/strand=\(ropeNodes) thickness=\(ropeThickness)pt strands=\(ropeStrands) gravity=\(ropeGravity)pt/s² turbulence=\(ropeTurbulence) (\(ropeNodes * ropeStrands)/\(Self.maximumRopeNodesTotal) total nodes), solver=XPBD-gentle-v4(compact-roots, midpoint-quadratic-rope, max4x5-passes, mass-floor-0.025, axial-damping-x10/y4, deterministic-noise-v3-normalized-arc); gaming rainbow=\(gamingLabel) cycle=\(rainbowCycle)s. Decorative settings only; not proof of rendered performance or gentleness."
     }
 }
 
+private enum EffectStrokePathKind {
+    case threePointQuadratic
+    case midpointQuadraticChain
+}
 private struct EffectStroke {
     let points: [CGPoint]
     let color: NSColor
     let width: CGFloat
-    let quadratic: Bool
+    let pathKind: EffectStrokePathKind
 }
-private struct VisualSample { let point: CGPoint; let uptime: TimeInterval }
+private struct VisualSample {
+    let point: CGPoint
+    let uptime: TimeInterval
+    let segment: UInt64
+}
 private struct RopeChain {
     var points: [CGPoint]
     var velocities: [CGVector]
@@ -2798,6 +2822,9 @@ private final class PointerOverlay {
     private var cvBridge: PointerDisplayLinkBridge?
     private var generation: UInt64 = 0
     private var isVisible = false
+    private var panelOrdered = false
+    private var selectedDisplayID: CGDirectDisplayID?
+    private var viewport = CGRect.zero
     private var target = CGPoint.zero
     private var displayed = CGPoint.zero
     private var adaptiveSmoothingEnabled = true
@@ -2808,6 +2835,11 @@ private final class PointerOverlay {
     private(set) var maximumRenderFrameGap = 0.0
     private var effects = PointerEffectsConfiguration()
     private var samples: [VisualSample] = []
+    private var sampleStartIndex = 0
+    private var trailSegment: UInt64 = 0
+    private var trailNeedsGap = false
+    private(set) var trailOverflowCount: UInt64 = 0
+    private static let maximumLiveTrailSamples = 8_192
     private var ropes: [RopeChain] = []
     private var currentStrokes: [EffectStroke] = []
     private var lastEffectsUptime: TimeInterval?
@@ -2819,9 +2851,9 @@ private final class PointerOverlay {
     private var strandAnchorOffsets: [CGFloat] = []
     // A head-speed envelope gates deterministic turbulence and decays to zero while stationary.
     private var ropeTurbulenceEnvelope: CGFloat = 0
-    // Effect decoration is culled outside this head-relative radius so a corrupt/very fast
-    // multi-display history cannot create a giant transparent backing store. The real head is
-    // always included at its unmodified global coordinate.
+    // Rope simulation is validated inside this head-relative safety radius. Trail history is
+    // intentionally exempt and remains lifetime-bounded; viewport intersection bounds the panel.
+    // The real head is always retained at its unmodified global coordinate.
     private static let maximumDecorationRadius: CGFloat = 1_024
 
     init() {
@@ -2846,20 +2878,22 @@ private final class PointerOverlay {
         if let cvLink { CVDisplayLinkStop(cvLink) }
     }
 
-    func begin(at point: CGPoint, on displayID: CGDirectDisplayID, timestamp: TimeInterval) -> Bool {
-        // The model calls begin only for a hidden-to-visible transition; avoid a redundant orderOut.
+    func begin(at point: CGPoint, on displayID: CGDirectDisplayID,
+               viewport proposedViewport: CGRect, timestamp: TimeInterval) -> Bool {
         stopDisplayLink()
         generation &+= 1
+        guard configureViewport(displayID: displayID, bounds: proposedViewport),
+              point.x.isFinite, point.y.isFinite else { return false }
         target = point
         displayed = point
         smoothing.reset(to: point, at: timestamp)
         lastRenderTimestamp = nil
         hasDeliveredRenderCallback = false
         maximumRenderFrameGap = 0
+        trailOverflowCount = 0
         isVisible = true
         clearVisualEffects()
         layoutPanel(head: point, strokes: [])
-        panel.orderFrontRegardless()
         guard startDisplayLink(on: displayID) else {
             hide()
             return false
@@ -2867,9 +2901,23 @@ private final class PointerOverlay {
         return true
     }
 
-    func updateTarget(_ point: CGPoint, timestamp: TimeInterval) {
-        guard isVisible, point.x.isFinite, point.y.isFinite else { return }
+    func updateTarget(_ point: CGPoint, on displayID: CGDirectDisplayID,
+                      viewport proposedViewport: CGRect, timestamp: TimeInterval) -> Bool {
+        guard isVisible, point.x.isFinite, point.y.isFinite else { return false }
+        if selectedDisplayID != displayID || viewport != proposedViewport {
+            stopDisplayLink()
+            generation &+= 1
+            guard configureViewport(displayID: displayID, bounds: proposedViewport),
+                  startDisplayLink(on: displayID) else {
+                hide()
+                return false
+            }
+            hasDeliveredRenderCallback = false
+            lastRenderTimestamp = nil
+            layoutPanel(head: displayed, strokes: currentStrokes)
+        }
         target = point
+        return true
     }
 
     func setEffectsConfiguration(_ configuration: PointerEffectsConfiguration) {
@@ -2882,6 +2930,9 @@ private final class PointerOverlay {
     }
     func clearVisualEffects() {
         samples.removeAll(keepingCapacity: true)
+        sampleStartIndex = 0
+        trailSegment = 0
+        trailNeedsGap = false
         ropes.removeAll(keepingCapacity: true)
         currentStrokes.removeAll(keepingCapacity: true)
         lastEffectsUptime = nil
@@ -2908,14 +2959,37 @@ private final class PointerOverlay {
         stopDisplayLink()
         lastRenderTimestamp = nil
         hasDeliveredRenderCallback = false
-        panel.orderOut(nil)
+        selectedDisplayID = nil
+        viewport = .zero
+        if panelOrdered { panel.orderOut(nil) }
+        panelOrdered = false
+    }
+
+    private func configureViewport(displayID: CGDirectDisplayID, bounds: CGRect) -> Bool {
+        let actual = CGDisplayBounds(displayID)
+        guard !actual.isEmpty, !actual.isNull, !actual.isInfinite,
+              actual.origin.x.isFinite, actual.origin.y.isFinite,
+              actual.width.isFinite, actual.height.isFinite, actual == bounds else { return false }
+        selectedDisplayID = displayID
+        viewport = actual
+        return true
+    }
+
+    private func screen(for displayID: CGDirectDisplayID) -> NSScreen? {
+        NSScreen.screens.first { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                return false
+            }
+            return CGDirectDisplayID(number.uint32Value) == displayID && CGDisplayBounds(displayID) == viewport
+        }
     }
 
     private func startDisplayLink(on displayID: CGDirectDisplayID) -> Bool {
         stopDisplayLink()
         if #available(macOS 14.0, *) {
+            guard let screen = screen(for: displayID) else { return false }
             let proxy = PointerModernDisplayLinkProxy(owner: self, generation: generation)
-            let link = panel.displayLink(target: proxy, selector: #selector(PointerModernDisplayLinkProxy.tick(_:)))
+            let link = screen.displayLink(target: proxy, selector: #selector(PointerModernDisplayLinkProxy.tick(_:)))
             modernLink = link
             link.add(to: .main, forMode: .common)
             return true
@@ -2963,10 +3037,26 @@ private final class PointerOverlay {
         // Actual uptime comes from main callback entry. The supplied timestamp remains only for the
         // older predicted/display-clock max-gap diagnostic and its existing dt guards.
         guard isVisible, callbackGeneration == generation else { return }
+        // Presentation timing uses actual main callback uptime, never targetTimestamp or packet time.
+        // Disabling is the exact former latest-only path on this very callback, with no filter tail.
+        let presentation = adaptiveSmoothingEnabled
+            ? smoothing.filter(latest: target, at: callbackUptime)
+            : target
+        // Effects and Trail history advance from actual displayed positions even while all geometry is
+        // outside. The selected-screen link remains active so unbounded reversal can naturally reenter.
+        if presentation != displayed { displayed = presentation }
+        renderEffects(head: displayed, uptime: callbackUptime)
+
+        // Diagnostics count only callbacks that produced geometry intersecting the selected viewport.
+        guard panelOrdered else {
+            hasDeliveredRenderCallback = false
+            lastRenderTimestamp = nil
+            return
+        }
         let startsSegment = !hasDeliveredRenderCallback
         hasDeliveredRenderCallback = true
         onVisibleRenderCallback?(callbackUptime, startsSegment)
-        // Keep the older predicted/display-clock max-gap metric separate from presentation.
+        // Keep the older display-clock max-gap metric separate and segment it across all-outside time.
         if timestamp.isFinite {
             if let previous = lastRenderTimestamp {
                 let dt = timestamp - previous
@@ -2974,23 +3064,12 @@ private final class PointerOverlay {
             }
             lastRenderTimestamp = timestamp
         }
-        // Presentation timing uses actual main callback uptime, never targetTimestamp or packet time.
-        // Disabling is the exact former latest-only path on this very callback, with no filter tail.
-        let presentation = adaptiveSmoothingEnabled
-            ? smoothing.filter(latest: target, at: callbackUptime)
-            : target
-        // Decorative effects advance on every visible callback, but only from the displayed head.
-        if presentation != displayed { displayed = presentation }
-        renderEffects(head: displayed, uptime: callbackUptime)
     }
 
     private func desiredStrandAnchorOffsets() -> [CGFloat] {
         let count = effects.ropeStrands
         guard count > 1 else { return [0] }
-        // At least a stroke width plus a small gap separates adjacent roots. The head-size term
-        // keeps thin ropes readable around a larger glyph; 192 pt covers 8 maximum-width strands.
-        let spacing = max(CGFloat(effects.ropeThickness) + 2, CGFloat(storedSize) * 0.08)
-        let totalSpan = min(CGFloat(192), spacing * CGFloat(count - 1))
+        let totalSpan = min(CGFloat(12), CGFloat(storedSize) * 0.12)
         let actualSpacing = totalSpan / CGFloat(count - 1)
         return (0..<count).map { CGFloat($0) * actualSpacing - totalSpan / 2 }
     }
@@ -3009,6 +3088,9 @@ private final class PointerOverlay {
         let discontinuity = elapsed.map { !$0.isFinite || $0 <= 0 || $0 > 0.25 } ?? false
         if discontinuity {
             samples.removeAll(keepingCapacity: true)
+            sampleStartIndex = 0
+            if trailSegment < UInt64.max { trailSegment += 1 }
+            trailNeedsGap = false
             ropes.removeAll(keepingCapacity: true)
             previousRopeHead = nil
             strandAnchorOffsets.removeAll(keepingCapacity: true)
@@ -3034,38 +3116,44 @@ private final class PointerOverlay {
         var strokes: [EffectStroke] = []
 
         if effects.mode == .trail {
-            samples.removeAll {
-                !finite($0.point) || uptime < $0.uptime || uptime - $0.uptime >= effects.lifetime ||
-                    !decorationAllowed($0.point)
+            // Expiry advances an index instead of repeatedly copying with removeFirst. Samples are
+            // never dropped for viewport/head distance and retain their original callback uptimes.
+            while sampleStartIndex < samples.count {
+                let sample = samples[sampleStartIndex]
+                if finite(sample.point), uptime >= sample.uptime,
+                   uptime - sample.uptime < effects.lifetime { break }
+                sampleStartIndex += 1
             }
-            let spacing = max(1, storedSize * 0.08)
-            let minimumInterval = max(1.0 / 240.0, effects.lifetime / 95.0)
-            if let last = samples.last {
-                let distance = hypot(last.point.x - head.x, last.point.y - head.y)
-                if distance.isFinite, distance >= spacing, uptime - last.uptime >= minimumInterval {
-                    samples.append(VisualSample(point: head, uptime: uptime))
+            let liveCount = samples.count - sampleStartIndex
+            let last = liveCount > 0 ? samples.last : nil
+            if last?.point != head {
+                if liveCount < Self.maximumLiveTrailSamples {
+                    if trailNeedsGap {
+                        if trailSegment < UInt64.max { trailSegment += 1 }
+                        trailNeedsGap = false
+                    }
+                    samples.append(VisualSample(point: head, uptime: uptime, segment: trailSegment))
+                } else {
+                    // Never evict or decimate live history. A later admitted sample begins a new
+                    // segment so overflow cannot fabricate one long straight connection.
+                    if trailOverflowCount < UInt64.max { trailOverflowCount += 1 }
+                    trailNeedsGap = true
                 }
-            } else {
-                samples.append(VisualSample(point: head, uptime: uptime))
             }
-            // The time gate keeps a full lifetime represented at high callback rates. This fallback
-            // preserves both age endpoints rather than blindly deleting the oldest geometry.
-            while samples.count > 96 {
-                var reduced: [VisualSample] = []
-                for index in samples.indices where index == 0 || index == samples.count - 1 || index % 2 == 0 {
-                    reduced.append(samples[index])
-                }
-                samples = reduced
+            // Amortized compaction bounds backing storage without changing the live time window.
+            if sampleStartIndex > 0 &&
+                (samples.count >= Self.maximumLiveTrailSamples || sampleStartIndex >= 1_024) {
+                samples = Array(samples[sampleStartIndex...])
+                sampleStartIndex = 0
             }
-            var rendered = samples
-            if let last = rendered.last, last.point != head, decorationAllowed(head) {
-                rendered.append(VisualSample(point: head, uptime: uptime))
-            }
-            if rendered.count > 1 {
-                for index in rendered.indices {
-                    let sample = rendered[index]
-                    let start = index == 0 ? sample.point : midpoint(rendered[index - 1].point, sample.point)
-                    let end = index == rendered.count - 1 ? sample.point : midpoint(sample.point, rendered[index + 1].point)
+            if samples.count - sampleStartIndex > 1 {
+                for index in sampleStartIndex..<samples.count {
+                    let sample = samples[index]
+                    let hasPrevious = index > sampleStartIndex && samples[index - 1].segment == sample.segment
+                    let hasNext = index + 1 < samples.count && samples[index + 1].segment == sample.segment
+                    guard hasPrevious || hasNext else { continue }
+                    let start = hasPrevious ? midpoint(samples[index - 1].point, sample.point) : sample.point
+                    let end = hasNext ? midpoint(sample.point, samples[index + 1].point) : sample.point
                     let age = max(0, uptime - sample.uptime)
                     let fadeStart = effects.lifetime - effects.fade
                     let scaleStart = effects.lifetime - effects.scaleDown
@@ -3075,7 +3163,7 @@ private final class PointerOverlay {
                     if finite(start), finite(end), width.isFinite {
                         strokes.append(EffectStroke(points: [start, sample.point, end],
                                                     color: effectColor(uptime: sample.uptime, alpha: CGFloat(alpha)),
-                                                    width: width, quadratic: true))
+                                                    width: width, pathKind: .threePointQuadratic))
                     }
                 }
             }
@@ -3127,8 +3215,11 @@ private final class PointerOverlay {
             } else {
                 headSpeed = 0
             }
-            let targetTurbulenceEnvelope = min(1, headSpeed / 900)
-            let envelopeRate: CGFloat = targetTurbulenceEnvelope > ropeTurbulenceEnvelope ? 8 : 3
+            // Reach useful activation during ordinary pointer motion rather than reserving most of
+            // the control for very fast sweeps. Actual callback dt is admitted only by the guard
+            // above; the bounded simulation interval also bounds envelope attack/decay work.
+            let targetTurbulenceEnvelope = min(1, headSpeed / 200)
+            let envelopeRate: CGFloat = targetTurbulenceEnvelope > ropeTurbulenceEnvelope ? 12 : 4
             ropeTurbulenceEnvelope += (targetTurbulenceEnvelope - ropeTurbulenceEnvelope) *
                 (1 - CGFloat(exp(-Double(envelopeRate) * dt)))
             let anchorOffsetBudget = strandAnchorOffsets.map { abs($0) }.max() ?? 0
@@ -3137,10 +3228,11 @@ private final class PointerOverlay {
             if dt > 0 && !invalid {
                 let substeps = min(4, max(1, Int(ceil(dt / (1.0 / 120.0)))))
                 let step = CGFloat(dt / Double(substeps))
-                // Unit line density is normalized to one mass per 16 pt. Segment compliance is
-                // 8e-5 + 2e-6*rest s²/mass: finite baseline softness plus length-scaled compliance
-                // (the discrete analogue of axial compliance L/EA). This avoids making a 48-node
-                // rope artificially heavy or a 4-node long rope rigid.
+                // Unit line density is normalized to one mass per 16 pt. The 0.025 floor keeps
+                // inverse mass finite for the shortest 20/128 geometry: rest is 20/127 ≈ 0.157 pt,
+                // so floor density is bounded to about 2.54x nominal rather than clamping geometry
+                // or turning a dense chain into a rigid exact-projection whip. Segment compliance is
+                // 8e-5 + 2e-6*rest s²/mass (the discrete analogue of axial compliance L/EA).
                 let nodeMass = max(rest / 16, 0.025)
                 let inverseMass = 1 / nodeMass
                 let compliance = CGFloat(0.00008) + CGFloat(0.000002) * rest
@@ -3150,7 +3242,10 @@ private final class PointerOverlay {
                 // screen-down gravity visibly settle instead of immediately erasing it.
                 let postDampingX = CGFloat(exp(-10 * Double(step)))
                 let postDampingY = CGFloat(exp(-4 * Double(step)))
-                let maximumTurbulenceAcceleration: CGFloat = 900
+                // At full strength/envelope, 1,200 pt/s² is still finite and velocity/radius capped.
+                // Against 10/s horizontal damping its force scale is responsive without restoring
+                // the former unconstrained strong horizontal impulse behavior.
+                let maximumTurbulenceAcceleration: CGFloat = 1_200
                 // The decorative budget scales with configured geometry and is intentionally far
                 // below the former blind 4,000 pt/s cap.
                 let maximumVelocity = max(CGFloat(180), min(CGFloat(1_400),
@@ -3173,10 +3268,17 @@ private final class PointerOverlay {
                         ropes[strand].lambdas = Array(repeating: 0, count: nodeCount - 1)
                         for index in 1..<nodeCount {
                             var velocity = ropes[strand].velocities[index]
-                            let phase = Double(strand * 97 + index * 31)
-                            let noise = 0.62 * sin(uptime * 5.7 + phase) + 0.38 * sin(uptime * 9.1 + phase * 1.73)
+                            let u = CGFloat(index) / CGFloat(nodeCount - 1)
+                            // Normalized arc position fixes spatial frequency as node density changes.
+                            // Strand offsets decorrelate chains; two low-ish smooth harmonics remain
+                            // deterministic and bounded by their weights' sum.
+                            let arcPhase = Double(u) * 2 * Double.pi
+                            let strandPhase = Double(strand) * 1.618033988749895
+                            let noise = 0.64 * sin(uptime * 3.7 + arcPhase + strandPhase) +
+                                0.36 * sin(uptime * 5.3 - arcPhase * 0.55 + strandPhase * 1.37)
+                            let tipWeight = u * u
                             let turbulence = CGFloat(noise) * effects.ropeTurbulence * ropeTurbulenceEnvelope *
-                                maximumTurbulenceAcceleration
+                                maximumTurbulenceAcceleration * tipWeight
                             // The deterministic, continuous force is non-head-only and motion-gated.
                             velocity.dx += turbulence * step
                             velocity.dy += turbulence * 0.35 * step
@@ -3268,7 +3370,7 @@ private final class PointerOverlay {
             }
             for chain in ropes where chain.points.allSatisfy(decorationAllowed) {
                 strokes.append(EffectStroke(points: chain.points, color: effectColor(uptime: uptime, alpha: 0.85),
-                                            width: CGFloat(effects.ropeThickness), quadratic: false))
+                                            width: CGFloat(effects.ropeThickness), pathKind: .midpointQuadraticChain))
             }
         }
 
@@ -3288,34 +3390,60 @@ private final class PointerOverlay {
     }
 
     private func layoutPanel(head: CGPoint, strokes: [EffectStroke]) {
-        guard head.x.isFinite, head.y.isFinite else { return }
+        guard isVisible else {
+            if panelOrdered { panel.orderOut(nil) }
+            panelOrdered = false
+            return
+        }
+        guard head.x.isFinite, head.y.isFinite, !viewport.isEmpty else { return }
         let pointerSize = CGFloat(storedSize)
         let headStroke = max(2, min(8, pointerSize * 0.1))
-        // Includes the longest glyph miter plus antialiasing. This head rect is never clamped.
+        // Includes the longest glyph miter plus antialiasing. The head remains at its true coordinate.
         let headMargin = max(12, pointerSize * 0.16, headStroke * 2.4 + 6)
-        var globalBounds = CGRect(x: head.x - pointerSize / 2 - headMargin,
-                                  y: head.y - pointerSize / 2 - headMargin,
-                                  width: pointerSize + 2 * headMargin,
-                                  height: pointerSize + 2 * headMargin)
-        for stroke in strokes where stroke.width.isFinite && stroke.width > 0 {
+        let headRadius = pointerSize / 2 + headMargin
+        let headBounds = CGRect(x: head.x - headRadius, y: head.y - headRadius,
+                                width: headRadius * 2, height: headRadius * 2)
+        guard !headBounds.isNull, !headBounds.isInfinite else { return }
+        var intersectingBounds: CGRect? = headBounds.intersects(viewport) ? headBounds : nil
+        for stroke in strokes where stroke.width.isFinite && stroke.width > 0 && stroke.points.count > 1 {
             let margin = stroke.width / 2 + 3
-            for point in stroke.points where point.x.isFinite && point.y.isFinite &&
-                abs(point.x - head.x) <= Self.maximumDecorationRadius &&
-                abs(point.y - head.y) <= Self.maximumDecorationRadius {
-                globalBounds = globalBounds.union(CGRect(x: point.x - margin, y: point.y - margin,
+            guard stroke.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { continue }
+            // Every actual quadratic endpoint/control participates. A quadratic lies inside its
+            // control hull, so this is conservative even when both endpoints are outside.
+            var strokeBounds = CGRect(x: stroke.points[0].x - margin,
+                                      y: stroke.points[0].y - margin,
+                                      width: margin * 2, height: margin * 2)
+            for point in stroke.points.dropFirst() {
+                strokeBounds = strokeBounds.union(CGRect(x: point.x - margin, y: point.y - margin,
                                                          width: margin * 2, height: margin * 2))
             }
+            if !strokeBounds.isNull, !strokeBounds.isInfinite, strokeBounds.intersects(viewport) {
+                intersectingBounds = intersectingBounds.map { $0.union(strokeBounds) } ?? strokeBounds
+            }
         }
-        globalBounds = globalBounds.integral
-        guard !globalBounds.isNull, !globalBounds.isInfinite, globalBounds.width.isFinite,
-              globalBounds.height.isFinite, globalBounds.width > 0, globalBounds.height > 0 else { return }
-        let primaryTop = CGDisplayBounds(CGMainDisplayID()).maxY
-        let appKitFrame = CGRect(x: globalBounds.minX, y: primaryTop - globalBounds.maxY,
-                                 width: globalBounds.width, height: globalBounds.height)
         view.globalHead = head
-        view.globalBounds = globalBounds
-        if view.frame.size != globalBounds.size { view.frame = CGRect(origin: .zero, size: globalBounds.size) }
+        guard let drawableBounds = intersectingBounds else {
+            if panelOrdered { panel.orderOut(nil) }
+            panelOrdered = false
+            return
+        }
+        let clippedBounds = drawableBounds.integral.intersection(viewport)
+        guard !clippedBounds.isNull, !clippedBounds.isEmpty, !clippedBounds.isInfinite,
+              clippedBounds.width.isFinite, clippedBounds.height.isFinite else {
+            if panelOrdered { panel.orderOut(nil) }
+            panelOrdered = false
+            return
+        }
+        let primaryTop = CGDisplayBounds(CGMainDisplayID()).maxY
+        let appKitFrame = CGRect(x: clippedBounds.minX, y: primaryTop - clippedBounds.maxY,
+                                 width: clippedBounds.width, height: clippedBounds.height)
+        view.globalBounds = clippedBounds
+        if view.frame.size != clippedBounds.size { view.frame = CGRect(origin: .zero, size: clippedBounds.size) }
         if panel.frame != appKitFrame { panel.setFrame(appKitFrame, display: false) }
+        if !panelOrdered {
+            panel.orderFrontRegardless()
+            panelOrdered = true
+        }
     }
 }
 
@@ -3402,6 +3530,10 @@ private final class PointerOverlayView: NSView {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current?.cgContext.clear(dirtyRect)
         NSGraphicsContext.restoreGraphicsState()
+        // The panel is only the drawable/selected-viewport intersection; this is the final explicit
+        // paint clip for partially visible glyphs and curves.
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current?.cgContext.clip(to: bounds)
 
         let stroke = max(2, min(8, pointerSize * 0.1))
         // CG global y is screen-down; AppKit local y is up, including displays with negative origins.
@@ -3411,23 +3543,56 @@ private final class PointerOverlayView: NSView {
         let localHead = centersHeadInBounds
             ? CGPoint(x: bounds.midX, y: bounds.midY)
             : local(globalHead)
-        // The glyph remains centered on the true head after the global geometry union shifts the panel.
+        // The glyph remains centered on the true unbounded head; clipping never relocates it.
         let glyphRect = CGRect(x: localHead.x - pointerSize / 2, y: localHead.y - pointerSize / 2,
                                width: pointerSize, height: pointerSize)
-        for effect in effectStrokes where effect.points.count > 1 {
+        func intersectsPanel(_ effect: EffectStroke) -> Bool {
+            guard effect.points.count > 1, effect.width.isFinite, effect.width > 0,
+                  effect.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return false }
+            let margin = effect.width / 2 + 3
+            var result = CGRect(x: effect.points[0].x - margin, y: effect.points[0].y - margin,
+                                width: margin * 2, height: margin * 2)
+            for point in effect.points.dropFirst() {
+                result = result.union(CGRect(x: point.x - margin, y: point.y - margin,
+                                             width: margin * 2, height: margin * 2))
+            }
+            return !result.isNull && !result.isInfinite && result.intersects(globalBounds)
+        }
+        // Cull whole paths only. Never remove outside control nodes and splice a different curve.
+        for effect in effectStrokes where intersectsPanel(effect) {
             NSGraphicsContext.saveGraphicsState()
             let line = NSBezierPath()
-            if effect.quadratic, effect.points.count == 3 {
-                let start = local(effect.points[0]), control = local(effect.points[1]), end = local(effect.points[2])
+            func midpoint(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+                CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+            }
+            func appendQuadratic(from start: CGPoint, control: CGPoint, to end: CGPoint) {
                 let control1 = CGPoint(x: start.x + (control.x - start.x) * 2 / 3,
                                        y: start.y + (control.y - start.y) * 2 / 3)
                 let control2 = CGPoint(x: end.x + (control.x - end.x) * 2 / 3,
                                        y: end.y + (control.y - end.y) * 2 / 3)
-                line.move(to: start)
                 line.curve(to: end, controlPoint1: control1, controlPoint2: control2)
-            } else {
-                line.move(to: local(effect.points[0]))
-                for point in effect.points.dropFirst() { line.line(to: local(point)) }
+            }
+            switch effect.pathKind {
+            case .threePointQuadratic:
+                let start = local(effect.points[0]), control = local(effect.points[1]), end = local(effect.points[2])
+                line.move(to: start)
+                appendQuadratic(from: start, control: control, to: end)
+            case .midpointQuadraticChain:
+                let first = local(effect.points[0])
+                line.move(to: first)
+                if effect.points.count == 2 {
+                    line.line(to: local(effect.points[1]))
+                } else {
+                    var segmentStart = first
+                    for index in 1..<(effect.points.count - 1) {
+                        let control = local(effect.points[index])
+                        let end = index == effect.points.count - 2
+                            ? local(effect.points[effect.points.count - 1])
+                            : midpoint(control, local(effect.points[index + 1]))
+                        appendQuadratic(from: segmentStart, control: control, to: end)
+                        segmentStart = end
+                    }
+                }
             }
             effect.color.setStroke()
             line.lineWidth = effect.width
@@ -3477,6 +3642,7 @@ private final class PointerOverlayView: NSView {
             path.lineWidth = stroke
             path.stroke()
         }
+        NSGraphicsContext.restoreGraphicsState()
         NSGraphicsContext.restoreGraphicsState()
     }
 
@@ -3853,12 +4019,14 @@ private struct EffectsSheet: View {
     @ViewBuilder private func ropeControls(_ c: PointerEffectsConfiguration) -> some View {
         GroupBox("Rope") { VStack(alignment: .leading) {
             Slider(value: binding(\.ropeLength), in: 20...600); Text("Length " + String(Int(c.ropeLength)) + " pt; segment " + decimal(c.ropeLength / Double(max(1, c.ropeNodes - 1))) + " pt")
-            Stepper("Nodes: " + String(c.ropeNodes), value: binding(\.ropeNodes), in: 4...min(48, 384 / c.ropeStrands))
+            Stepper("Nodes per strand: " + String(c.ropeNodes), value: binding(\.ropeNodes),
+                    in: PointerEffectsConfiguration.minimumRopeNodes...PointerEffectsConfiguration.maximumRopeNodes(forStrands: c.ropeStrands))
             Slider(value: binding(\.ropeThickness), in: 1...24); Text("Thickness " + decimal(c.ropeThickness) + " pt")
-            Stepper("Strands: " + String(c.ropeStrands), value: binding(\.ropeStrands), in: 1...8)
-            Slider(value: binding(\.ropeGravity), in: 0...2000); Text("Screen-down gravity " + String(Int(c.ropeGravity)) + " pt/s² — " + String(c.ropeNodes*c.ropeStrands) + "/384 node budget")
+            Stepper("Strands: " + String(c.ropeStrands), value: binding(\.ropeStrands),
+                    in: PointerEffectsConfiguration.minimumRopeStrands...PointerEffectsConfiguration.maximumRopeStrands)
+            Slider(value: binding(\.ropeGravity), in: 0...2000); Text("Screen-down gravity " + String(Int(c.ropeGravity)) + " pt/s² — " + String(c.ropeNodes*c.ropeStrands) + "/" + String(PointerEffectsConfiguration.maximumRopeNodesTotal) + " total-node budget")
             Slider(value: binding(\.ropeTurbulence), in: 0...1)
-            Text("Movement turbulence " + String(Int((c.ropeTurbulence * 100).rounded())) + "% — deterministic, bounded, and off at 0%")
+            Text("Turbulence strength: " + String(Int((c.ropeTurbulence * 100).rounded())) + "% (0 off, 100 strongest). Changes take effect only when you choose Apply.")
         } }
     }
 }
@@ -3911,7 +4079,7 @@ private struct JitterDiagnosticsSheet: View {
             }
             Text(model.jitterDiagnosticsStatus)
                 .foregroundStyle(model.jitterDiagnosticsActive ? ReceiverTheme.teal : .secondary)
-            Text("Receive timing continues while the pointer is hidden. Render timing and receive age are sampled only at visible display-link callbacks.")
+            Text("Receive timing continues while permission is off or geometry is outside. Render timing and receive age are sampled only at display-link callbacks with selected-viewport-intersecting geometry.")
                 .font(.footnote).foregroundStyle(.secondary)
             HStack {
                 if model.jitterDiagnosticsActive {
